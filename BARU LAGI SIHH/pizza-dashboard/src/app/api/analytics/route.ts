@@ -33,7 +33,11 @@ export async function GET(req: NextRequest) {
       ordersByLocation,
       delayStats,
       peakHourStats,
-      paymentStats
+      paymentStats,
+      trafficStats,
+      weekendStats,
+      avgDeliveryTime,
+      avgDistance
     ] = await Promise.all([
       prisma.deliveryData.count({ where: whereClause }),
       prisma.deliveryData.groupBy({
@@ -83,25 +87,71 @@ export async function GET(req: NextRequest) {
         where: whereClause,
         _count: { orderId: true },
         orderBy: [{ _count: { orderId: 'desc' } }]
+      }),
+      prisma.deliveryData.groupBy({
+        by: ['trafficLevel'],
+        where: whereClause,
+        _count: { orderId: true },
+        orderBy: [{ _count: { orderId: 'desc' } }]
+      }),
+      prisma.deliveryData.groupBy({
+        by: ['isWeekend'],
+        where: whereClause,
+        _count: { orderId: true }
+      }),
+      prisma.deliveryData.aggregate({
+        where: whereClause,
+        _avg: { deliveryDuration: true }
+      }),
+      prisma.deliveryData.aggregate({
+        where: whereClause,
+        _avg: { distanceKm: true }
       })
     ])
 
-    // Get restaurant names
-    const restaurantIds = ordersByRestaurant.map(o => o.restaurantId)
-    const restaurants = await prisma.restaurant.findMany({
-      where: { id: { in: restaurantIds } }
-    })
-    const restaurantMap = new Map(restaurants.map(r => [r.id, r.name]))
+    // Get restaurant data - include all when no specific restaurant is selected
+    const isViewingAll = !restaurantId && userRole !== 'MANAGER' && userRole !== 'STAFF'
+    const allRestaurants = isViewingAll 
+      ? await prisma.restaurant.findMany({ orderBy: { name: 'asc' } })
+      : []
+    
+    // Always get the selected restaurant name for display
+    let selectedRestaurantName = 'Selected Restaurant'
+    if (restaurantId) {
+      const selectedRestaurant = await prisma.restaurant.findUnique({ where: { id: restaurantId } })
+      selectedRestaurantName = selectedRestaurant?.name || 'Unknown'
+    }
+    
+    const restaurantMap = new Map(allRestaurants.map(r => [r.id, r.name]))
 
     const onTimeCount = delayStats.find(d => !d.isDelayed)?._count.orderId || 0
     const delayedCount = delayStats.find(d => d.isDelayed)?._count.orderId || 0
 
+    // Create map of restaurant data
+    const restaurantDataMap = new Map(ordersByRestaurant.map(o => [o.restaurantId, o._count.orderId]))
+
+    // Include ALL restaurants only when viewing all, otherwise use actual data
+    let ordersByRestaurantFinal: { restaurant: string; count: number }[]
+    if (isViewingAll) {
+      ordersByRestaurantFinal = allRestaurants.map(r => ({
+        restaurant: r.name,
+        count: restaurantDataMap.get(r.id) || 0
+      }))
+    } else if (restaurantId) {
+      // When viewing specific restaurant, show that restaurant with its data
+      const count = restaurantDataMap.get(restaurantId) || 0
+      ordersByRestaurantFinal = [{ restaurant: selectedRestaurantName, count }]
+    } else {
+      // For MANAGER/STAFF viewing their own restaurant
+      ordersByRestaurantFinal = ordersByRestaurant.map(o => ({
+        restaurant: restaurantMap.get(o.restaurantId) || selectedRestaurantName,
+        count: o._count.orderId
+      }))
+    }
+
     return NextResponse.json({
       totalOrders,
-      ordersByRestaurant: ordersByRestaurant.map(o => ({
-        restaurant: restaurantMap.get(o.restaurantId) || 'Unknown',
-        count: o._count.orderId
-      })),
+      ordersByRestaurant: ordersByRestaurantFinal,
       ordersBySize: ordersBySize.map(o => ({
         size: o.pizzaSize,
         count: o._count.orderId
@@ -130,7 +180,17 @@ export async function GET(req: NextRequest) {
       paymentStats: paymentStats.map(o => ({
         method: o.paymentMethod,
         count: o._count.orderId
-      }))
+      })),
+      trafficStats: trafficStats.map(o => ({
+        level: o.trafficLevel,
+        count: o._count.orderId
+      })),
+      weekendStats: {
+        weekday: weekendStats.find(d => !d.isWeekend)?._count.orderId || 0,
+        weekend: weekendStats.find(d => d.isWeekend)?._count.orderId || 0
+      },
+      avgDeliveryTime: avgDeliveryTime._avg.deliveryDuration || 0,
+      avgDistance: avgDistance._avg.distanceKm || 0
     })
 
   } catch (error) {

@@ -22,6 +22,11 @@ export default function HistoryPage() {
   const { data: session } = useSession()
   const [history, setHistory] = useState<HistoryEntry[]>([])
   const [isLoading, setIsLoading] = useState(true)
+  const [mounted, setMounted] = useState(false)
+
+  useEffect(() => {
+    setMounted(true)
+  }, [])
 
   const userRole = (session?.user as any)?.role
 
@@ -103,7 +108,7 @@ export default function HistoryPage() {
                     <div className="text-right text-sm text-gray-500">
                       <div className="flex items-center gap-1">
                         <Calendar className="h-3 w-3" />
-                        {new Date(entry.timestamp).toLocaleString('id-ID')}
+                        {mounted ? new Date(entry.timestamp).toLocaleString('id-ID') : '-'}
                       </div>
                       <div className="flex items-center gap-1 mt-1">
                         <User className="h-3 w-3" />

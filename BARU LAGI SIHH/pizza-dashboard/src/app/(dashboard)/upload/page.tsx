@@ -14,7 +14,15 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { AlertCircle, CheckCircle2, Upload, FileSpreadsheet, Loader2, X } from 'lucide-react'
+import { AlertCircle, CheckCircle2, Upload, FileSpreadsheet, Loader2, X, Trash2, AlertTriangle } from 'lucide-react'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
 
 interface Restaurant {
@@ -30,6 +38,22 @@ interface UploadError {
   severity: string
 }
 
+interface RestaurantInfo {
+  id: string
+  name: string
+  code: string
+}
+
+interface UploadResultData {
+  totalRows: number
+  validRows: number
+  invalidRows: number
+  qualityScore: number
+  errors: UploadError[]
+  restaurant?: RestaurantInfo
+  restaurants?: { restaurantName: string; restaurantId: string; success: number; failed: number }[]
+}
+
 export default function UploadPage() {
   const { data: session } = useSession()
   const [file, setFile] = useState<File | null>(null)
@@ -40,14 +64,11 @@ export default function UploadPage() {
   const [result, setResult] = useState<{
     success: boolean
     message: string
-    data?: {
-      totalRows: number
-      validRows: number
-      invalidRows: number
-      qualityScore: number
-      errors: UploadError[]
-    }
+    data?: UploadResultData
   } | null>(null)
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false)
+  const [isDeleting, setIsDeleting] = useState(false)
+  const [deleteTarget, setDeleteTarget] = useState<{ restaurantId?: string; restaurantName?: string } | null>(null)
 
   const userRole = (session?.user as any)?.role
   const isSuperAdmin = userRole === 'GM' || userRole === 'ADMIN_PUSAT'
@@ -132,6 +153,44 @@ export default function UploadPage() {
     setFile(null)
     setResult(null)
     setUploadProgress(0)
+  }
+
+  const handleDeleteAll = async () => {
+    setIsDeleting(true)
+    try {
+      const url = deleteTarget?.restaurantId 
+        ? `/api/delivery-data?restaurantId=${deleteTarget.restaurantId}`
+        : '/api/delivery-data'
+      
+      const res = await fetch(url, { method: 'DELETE' })
+      const data = await res.json()
+      
+      if (res.ok) {
+        setResult({
+          success: true,
+          message: data.message || 'Data berhasil dihapus'
+        })
+      } else {
+        setResult({
+          success: false,
+          message: data.error || 'Gagal menghapus data'
+        })
+      }
+    } catch (error) {
+      setResult({
+        success: false,
+        message: 'Terjadi kesalahan saat menghapus data'
+      })
+    } finally {
+      setIsDeleting(false)
+      setShowDeleteDialog(false)
+      setDeleteTarget(null)
+    }
+  }
+
+  const openDeleteDialog = (restaurantId?: string, restaurantName?: string) => {
+    setDeleteTarget({ restaurantId, restaurantName })
+    setShowDeleteDialog(true)
   }
 
   // Calculate success percentage
@@ -358,6 +417,46 @@ export default function UploadPage() {
 
                 {result.data && (
                   <>
+                    {/* Restaurant Info */}
+                    {result.data.restaurant && (
+                      <div 
+                        className="p-3 rounded-lg"
+                        style={{ 
+                          backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                        }}
+                      >
+                        <p className="text-sm font-medium" style={{ color: 'rgb(59, 130, 246)' }}>
+                          Uploaded to: {result.data.restaurant.name} ({result.data.restaurant.code})
+                        </p>
+                      </div>
+                    )}
+
+                    {/* Multiple Restaurants */}
+                    {result.data.restaurants && result.data.restaurants.length > 0 && (
+                      <div className="space-y-2">
+                        <p className="font-medium" style={{ color: 'var(--foreground)' }}>
+                          Data uploaded to:
+                        </p>
+                        {result.data.restaurants.map((rest, i) => (
+                          <div 
+                            key={i}
+                            className="p-3 rounded-lg flex justify-between items-center"
+                            style={{ 
+                              backgroundColor: rest.success > 0 ? 'rgba(34, 197, 94, 0.1)' : 'rgba(239, 68, 68, 0.1)',
+                            }}
+                          >
+                            <span style={{ color: rest.success > 0 ? 'rgb(34, 197, 94)' : 'rgb(239, 68, 68)' }}>
+                              {rest.restaurantName}
+                            </span>
+                            <span className="text-sm font-medium">
+                              {rest.success} rows
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Stats Grid */}
                     {/* Stats Grid */}
                     <div className="grid grid-cols-2 gap-4">
                       <div 
@@ -428,7 +527,7 @@ export default function UploadPage() {
                           className="text-xl font-bold"
                           style={{ color: 'var(--primary)' }}
                         >
-                          {result.data.qualityScore.toFixed(1)}%
+                          {result?.data?.qualityScore?.toFixed(1) ?? '0'}%
                         </span>
                       </div>
                     </div>
@@ -524,6 +623,93 @@ export default function UploadPage() {
           </div>
         </CardContent>
       </Card>
+
+      {/* Delete Data Section - GM Only */}
+      {userRole === 'GM' && (
+        <Card 
+          className="border-l-4 border-red-500"
+          style={{ 
+            backgroundColor: 'var(--card)',
+          }}
+        >
+          <CardHeader>
+            <CardTitle style={{ color: 'var(--card-foreground)' }} className="flex items-center gap-2">
+              <Trash2 className="h-5 w-5 text-red-500" />
+              Hapus Data
+            </CardTitle>
+            <CardDescription style={{ color: 'var(--muted-foreground)' }}>
+              Hapus semua data delivery. Tindakan ini tidak dapat dibatalkan.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex flex-wrap gap-3">
+              <Button
+                variant="destructive"
+                onClick={() => openDeleteDialog()}
+                className="bg-red-500 hover:bg-red-600 text-white"
+              >
+                <Trash2 className="mr-2 h-4 w-4" />
+                Hapus Semua Data
+              </Button>
+              
+              {restaurants.map((restaurant) => (
+                <Button
+                  key={restaurant.id}
+                  variant="outline"
+                  onClick={() => openDeleteDialog(restaurant.id, restaurant.name)}
+                  className="border-red-200 text-red-600 hover:bg-red-50"
+                >
+                  <Trash2 className="mr-2 h-4 w-4" />
+                  Hapus: {restaurant.name}
+                </Button>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Delete Confirmation Dialog */}
+      <Dialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-red-600">
+              <AlertTriangle className="h-5 w-5" />
+              Konfirmasi Hapus Data
+            </DialogTitle>
+            <DialogDescription>
+              Apakah Anda yakin ingin menghapus {deleteTarget?.restaurantName ? `data untuk ${deleteTarget.restaurantName}` : 'semua data delivery'}?
+              <br /><br />
+              <strong className="text-red-500">Tindakan ini tidak dapat dibatalkan!</strong>
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setShowDeleteDialog(false)}
+            >
+              Batal
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleDeleteAll}
+              disabled={isDeleting}
+              className="bg-red-500 hover:bg-red-600"
+            >
+              {isDeleting ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Menghapus...
+                </>
+              ) : (
+                <>
+                  <Trash2 className="mr-2 h-4 w-4" />
+                  Hapus Data
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

@@ -9,8 +9,8 @@ const openSans = Open_Sans({
 });
 
 export const metadata: Metadata = {
-  title: "Pizza Delivery Dashboard",
-  description: "Monitor and analyze pizza delivery data from multiple restaurants",
+  title: "Sunest Systems",
+  description: "Monitor and analyze delivery data from multiple restaurants",
 };
 
 export default function RootLayout({
