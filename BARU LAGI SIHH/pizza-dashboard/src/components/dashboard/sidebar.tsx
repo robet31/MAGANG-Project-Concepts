@@ -1,5 +1,6 @@
 'use client'
 
+import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import { signOut, useSession } from 'next-auth/react'
@@ -13,7 +14,6 @@ import {
   History, 
   Settings, 
   LogOut, 
-  Pizza,
   Users,
   Building2,
   Bell
@@ -39,8 +39,13 @@ interface SidebarProps {
 
 export function Sidebar({ className }: SidebarProps) {
   const pathname = usePathname()
-  const { data: session } = useSession()
+  const { data: session, status } = useSession()
   const router = useRouter()
+  const [mounted, setMounted] = useState(false)
+
+  useEffect(() => {
+    setMounted(true)
+  }, [])
 
   const userRole = (session?.user as any)?.role
   const isAdmin = userRole === 'GM' || userRole === 'ADMIN_PUSAT'
@@ -67,13 +72,11 @@ export function Sidebar({ className }: SidebarProps) {
         className="flex items-center gap-3 px-6 py-5 border-b"
         style={{ borderColor: 'var(--sidebar-border)' }}
       >
-        <div 
-          className="p-2 rounded-lg"
-          style={{ backgroundColor: 'var(--primary)' }}
-        >
-          <Pizza 
-            className="h-6 w-6" 
-            style={{ color: 'var(--primary-foreground)' }}
+        <div className="h-10 w-10 relative flex-shrink-0">
+          <img 
+            src="/sunest-logo.png" 
+            alt="Sunest Systems" 
+            className="h-full w-full object-contain"
           />
         </div>
         <div>
@@ -81,7 +84,7 @@ export function Sidebar({ className }: SidebarProps) {
             className="font-bold text-lg"
             style={{ color: 'var(--sidebar-foreground)' }}
           >
-            Pizza Dashboard
+            Sunest Systems
           </h1>
           <p 
             className="text-xs"

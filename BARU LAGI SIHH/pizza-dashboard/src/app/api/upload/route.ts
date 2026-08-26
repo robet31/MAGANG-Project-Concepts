@@ -78,31 +78,62 @@ export async function POST(req: NextRequest) {
       }, { status: 400 })
     }
 
-    // For super admins without specific restaurant, try to find from Excel data
-    let targetRestaurantId = restaurantId
-    if (isSuperAdmin && !restaurantId) {
-      const firstRestaurantName = rawData[0]?.['Restaurant Name']
-      if (firstRestaurantName) {
-        // SQLite doesn't support mode: 'insensitive', use case-insensitive search manually
-        const restaurants = await prisma.restaurant.findMany()
-        const restaurant = restaurants.find(r => 
-          r.name.toLowerCase().includes(firstRestaurantName.toLowerCase())
-        )
-        if (restaurant) {
-          targetRestaurantId = restaurant.id
-        }
-      }
-      
-      // If still no restaurant, use the first available
-      if (!targetRestaurantId) {
-        const firstRestaurant = await prisma.restaurant.findFirst()
-        if (firstRestaurant) {
-          targetRestaurantId = firstRestaurant.id
-        }
-      }
-    }
+    // Get all restaurants from database for mapping
+    const allRestaurants = await prisma.restaurant.findMany()
+    const restaurantMap = new Map(allRestaurants.map(r => [r.name.toLowerCase(), r.id]))
+    const restaurantCodeMap = new Map(allRestaurants.map(r => [r.code.toLowerCase(), r.id]))
 
-    if (!targetRestaurantId) {
+    // Create a map to group data by restaurant
+    const restaurantDataMap = new Map<string, any[]>()
+
+    // Process each row and group by restaurant
+    rawData.forEach((row: any) => {
+      const restaurantName = row['Restaurant Name']?.toString().trim()
+      
+      // Try to find restaurant by name or code
+      let targetRestaurantId: string | null = null
+      
+      if (restaurantName) {
+        // Try exact match first
+        const nameLower = restaurantName.toLowerCase()
+        
+        // Check by name (partial match)
+        for (const [rName, rId] of restaurantMap) {
+          if (nameLower.includes(rName) || rName.includes(nameLower)) {
+            targetRestaurantId = rId
+            break
+          }
+        }
+        
+        // If not found, try by code (e.g., "DOM", "PZH")
+        if (!targetRestaurantId) {
+          for (const [rCode, rId] of restaurantCodeMap) {
+            if (nameLower.includes(rCode)) {
+              targetRestaurantId = rId
+              break
+            }
+          }
+        }
+      }
+
+      // If still not found, use default restaurant (first one)
+      if (!targetRestaurantId && allRestaurants.length > 0) {
+        // Use the restaurant from form or first restaurant
+        targetRestaurantId = restaurantId || allRestaurants[0].id
+      }
+
+      if (targetRestaurantId) {
+        if (!restaurantDataMap.has(targetRestaurantId)) {
+          restaurantDataMap.set(targetRestaurantId, [])
+        }
+        restaurantDataMap.get(targetRestaurantId)!.push(row)
+      }
+    })
+
+    // For single restaurant case (original logic)
+    const singleRestaurantId = restaurantId || (restaurantDataMap.size > 0 ? Array.from(restaurantDataMap.keys())[0] : null)
+
+    if (!singleRestaurantId) {
       return NextResponse.json({ 
         error: 'No restaurant found. Please select a restaurant or ensure restaurants are created.' 
       }, { status: 400 })
@@ -110,15 +141,142 @@ export async function POST(req: NextRequest) {
 
     // Verify restaurant exists
     const restaurant = await prisma.restaurant.findUnique({
-      where: { id: targetRestaurantId }
+      where: { id: singleRestaurantId }
     })
 
     if (!restaurant) {
       return NextResponse.json({ error: 'Restaurant not found' }, { status: 404 })
     }
 
-    // Cleanse data
-    const cleansed = cleanseData(rawData, targetRestaurantId, userId)
+    // If multiple restaurants detected in Excel, process each
+    const uploadResults: { restaurantName: string; restaurantId: string; success: number; failed: number }[] = []
+    
+    if (isSuperAdmin && restaurantDataMap.size > 1) {
+      // Multiple restaurants - process each
+      for (const [restId, rows] of restaurantDataMap) {
+        const restInfo = allRestaurants.find(r => r.id === restId)
+        const cleansed = cleanseData(rows, restId, userId)
+        
+        if (cleansed.data.length === 0) {
+          uploadResults.push({
+            restaurantName: restInfo?.name || 'Unknown',
+            restaurantId: restId,
+            success: 0,
+            failed: rows.length
+          })
+          continue
+        }
+
+        let successCount = 0
+        let failCount = 0
+
+        for (const row of cleansed.data) {
+          try {
+            const orderId = row.orderId || `ORD${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+            
+            await prisma.deliveryData.upsert({
+              where: { orderId: orderId },
+              update: {
+                location: row.location || '',
+                orderTime: row.orderTime ? new Date(row.orderTime) : new Date(),
+                deliveryTime: row.deliveryTime ? new Date(row.deliveryTime) : new Date(),
+                deliveryDuration: row.deliveryDuration || 0,
+                orderMonth: row.orderMonth || 'Unknown',
+                orderHour: row.orderHour || 0,
+                pizzaSize: row.pizzaSize || 'Unknown',
+                pizzaType: row.pizzaType || 'Unknown',
+                toppingsCount: row.toppingsCount || 0,
+                pizzaComplexity: row.pizzaComplexity || 0,
+                toppingDensity: row.toppingDensity || null,
+                distanceKm: row.distanceKm || 0,
+                trafficLevel: row.trafficLevel || 'Unknown',
+                trafficImpact: row.trafficImpact || 1,
+                isPeakHour: row.isPeakHour || false,
+                isWeekend: row.isWeekend || false,
+                paymentMethod: row.paymentMethod || 'Unknown',
+                paymentCategory: row.paymentCategory || 'Unknown',
+                estimatedDuration: row.estimatedDuration || 0,
+                deliveryEfficiency: row.deliveryEfficiency || null,
+                delayMin: row.delayMin || 0,
+                isDelayed: row.isDelayed || false,
+                restaurantAvgTime: row.restaurantAvgTime || null,
+                qualityScore: row.qualityScore || 0,
+                version: { increment: 1 }
+              },
+              create: {
+                orderId,
+                restaurantId: restId,
+                location: row.location || '',
+                orderTime: row.orderTime ? new Date(row.orderTime) : new Date(),
+                deliveryTime: row.deliveryTime ? new Date(row.deliveryTime) : new Date(),
+                deliveryDuration: row.deliveryDuration || 0,
+                orderMonth: row.orderMonth || 'Unknown',
+                orderHour: row.orderHour || 0,
+                pizzaSize: row.pizzaSize || 'Unknown',
+                pizzaType: row.pizzaType || 'Unknown',
+                toppingsCount: row.toppingsCount || 0,
+                pizzaComplexity: row.pizzaComplexity || 0,
+                toppingDensity: row.toppingDensity || null,
+                distanceKm: row.distanceKm || 0,
+                trafficLevel: row.trafficLevel || 'Unknown',
+                trafficImpact: row.trafficImpact || 1,
+                isPeakHour: row.isPeakHour || false,
+                isWeekend: row.isWeekend || false,
+                paymentMethod: row.paymentMethod || 'Unknown',
+                paymentCategory: row.paymentCategory || 'Unknown',
+                estimatedDuration: row.estimatedDuration || 0,
+                deliveryEfficiency: row.deliveryEfficiency || null,
+                delayMin: row.delayMin || 0,
+                isDelayed: row.isDelayed || false,
+                restaurantAvgTime: row.restaurantAvgTime || null,
+                uploadedBy: userId,
+                uploadedAt: new Date(),
+                validatedAt: new Date(),
+                validatedBy: userId,
+                qualityScore: row.qualityScore || 0,
+                version: 1
+              }
+            })
+            successCount++
+          } catch (error: any) {
+            console.error(`Error saving row ${row.orderId}:`, error.message)
+            failCount++
+          }
+        }
+
+        uploadResults.push({
+          restaurantName: restInfo?.name || 'Unknown',
+          restaurantId: restId,
+          success: successCount,
+          failed: failCount
+        })
+      }
+
+      // Log audit for multiple restaurants
+      await prisma.auditLog.create({
+        data: {
+          userId: userId,
+          action: 'UPLOAD_DATA_MULTI',
+          entity: 'DeliveryData',
+          details: `Uploaded data for ${uploadResults.length} restaurants: ${uploadResults.map(r => `${r.restaurantName} (${r.success} rows)`).join(', ')}`,
+          ipAddress: req.headers.get('x-forwarded-for') || 'unknown'
+        }
+      })
+
+      return NextResponse.json({
+        success: true,
+        message: `Berhasil upload data untuk ${uploadResults.length} restoran`,
+        data: {
+          totalRows: rawData.length,
+          validRows: uploadResults.reduce((sum, r) => sum + r.success, 0),
+          invalidRows: uploadResults.reduce((sum, r) => sum + r.failed, 0),
+          restaurants: uploadResults
+        }
+      })
+    }
+
+    // Single restaurant - original logic
+    const cleansed = cleanseData(rawData, singleRestaurantId, userId)
 
     if (cleansed.data.length === 0) {
       return NextResponse.json({
@@ -150,7 +308,7 @@ export async function POST(req: NextRequest) {
         // Prepare data for insert
         const dataToInsert = {
           orderId: orderId,
-          restaurantId: targetRestaurantId,
+          restaurantId: singleRestaurantId,
           location: row.location || '',
           orderTime: row.orderTime ? new Date(row.orderTime) : new Date(),
           deliveryTime: row.deliveryTime ? new Date(row.deliveryTime) : new Date(),
@@ -209,7 +367,7 @@ export async function POST(req: NextRequest) {
           userId: userId,
           action: 'UPLOAD_DATA',
           entity: 'DeliveryData',
-          restaurantId: targetRestaurantId,
+          restaurantId: singleRestaurantId,
           details: `Uploaded ${successfullySaved.length} records from ${file.name}`,
           ipAddress: req.headers.get('x-forwarded-for') || 'unknown'
         }
@@ -221,13 +379,18 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({
       success: true,
-      message: `Berhasil upload ${successfullySaved.length} dari ${rawData.length} baris data`,
+      message: `Berhasil upload ${successfullySaved.length} dari ${rawData.length} baris data ke ${restaurant.name}`,
       data: {
         totalRows: rawData.length,
         validRows: successfullySaved.length,
         invalidRows: rawData.length - successfullySaved.length,
         qualityScore: cleansed.qualityScore,
-        errors: cleansed.errors.slice(0, 20)
+        errors: cleansed.errors.slice(0, 20),
+        restaurant: {
+          id: restaurant.id,
+          name: restaurant.name,
+          code: restaurant.code
+        }
       }
     })
 
