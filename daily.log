@@ -1,1 +1,1 @@
-refactor: clean up redundant logic in handler - 2026-11-13
+fix: resolve race condition on async - 2026-11-17
